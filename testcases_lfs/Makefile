@@ -1,9 +1,9 @@
-CC     = gcc
+CC     = gcc 
 
 all: lfs_test
 
 lfs_test: lfs_test.c
-	$(CC) lfs_test.c -o lfs_test
+	$(CC) lfs_test.c -o lfs_test -lpthread
 
 clean:
 	rm -f lfs_test
