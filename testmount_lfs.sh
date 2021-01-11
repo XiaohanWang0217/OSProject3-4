@@ -1,4 +1,6 @@
 #!/bin/sh
+sudo cp lfslog_blank lfslog
+# 必要时清空磁盘中内容
 
 gcc -Wall lfs.c `pkg-config fuse3 --cflags --libs` -o lfs
 # -Wall指定生成所有警告信息
@@ -23,7 +25,7 @@ sudo ls -l lfstest_dir
 sudo cp testcases_lfs/test.txt lfstest_dir/test.txt
 # 【格式】cp [选项] [源文件或目录] [目标文件或目录]
 # 【功能】复制文件或目录
-# 此时会调用lfs_getattr、lfs_create、lfs_getattr、lfs_getxattr、lfs_write、lfs_flush、lfs_lock、lfs_release
+# 此时会调用lfs_getattr(为什么调用了3次？)、lfs_create、lfs_getattr、lfs_getxattr、lfs_write、lfs_flush、lfs_lock、lfs_release
 
 sudo cp testcases_lfs/huge_file.txt lfstest_dir/test_huge_file.txt
 sudo cat lfstest_dir/test_huge_file.txt
@@ -56,13 +58,23 @@ sudo cat lfstest_dir/test2.txt
 # 【功能】为文件或目录改名，或将文件或目录移入其它位置
 # lfs_getattr、lfs_rename
 
-sudo vi lfstest_dir/test3.txt
+# sudo vi lfstest_dir/test3.txt
 # echofs_access、echofs_getattr、echofs_mknod、echofs_open、echofs_flush、echofs_release、echofs_unlink、echofs_write、echofs_truncate、echofs_fsync
 
 sudo rm lfstest_dir/test2.txt
 sudo ls -l lfstest_dir
 # 【格式】rm [选项] [目标文件或目录]
 # lfs_getattr、lfs_unlink
+
+#sudo sed -i 's#abc#replacetext#' mount_dir/testfile.txt
+# 【格式】sed -i [替换格式] [文件名]
+# 【功能】替换格式为's#原内容#替换后内容#' 或 '行号s#原内容#替换后内容#'
+# 出错 sed: couldn't open temporary file mount_dir/sedoQUB25: Permission denied
+
+#sudo echo abcdefg >> mount_dir/testfile.txt
+#【格式】echo abcdef>>a.txt
+# 向文件追加内容
+# 出错 bash: mount_dir/abc.txt: Permission denied
 
 sudo chgrp amanda lfstest_dir/test.txt
 sudo ls -l lfstest_dir
@@ -101,7 +113,11 @@ sudo ls -l lfstest_dir
 sudo cp testcases_lfs/test.txt lfstest_dir/testdir/newdir/test.txt
 sudo cat lfstest_dir/testdir/newdir/test.txt
 
-# 修改测例
+sudo chmod 000 lfstest_dir/test.txt
+sudo cat lfstest_dir/test.txt
+sudo chmod 777 lfstest_dir/test.txt
+sudo cat lfstest_dir/test.txt
+# 必要时修改测例
 cd testcases_lfs
 make
 sudo ./lfs_test

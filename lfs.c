@@ -19,7 +19,9 @@
 #include <stdint.h>
 #include "uthash.h"  // 这个是一个开源项目，直接拿来用的
 
-#include <threads.h>  // 互斥操作的声明文件
+//#include <threads.h>  // 互斥操作的声明文件
+
+#include <semaphore.h>  // 改用信号量试试
 
 #include "lfs.h"  // 文件系统的数据结构
 #include "prettyprint.h"  // 自己写的输出各种结构体的函数
@@ -28,25 +30,25 @@
 // 全局变量
 struct lfs_global_info *li;
 // 全局互斥对象
-mtx_t lfs_golbal_mtx;
+sem_t lfs_golbal_sem;
 // 细粒度互斥对象
-mtx_t lfs_mtx_getattr;
-mtx_t lfs_mtx_opendir;
-mtx_t lfs_mtx_readdir;
-mtx_t lfs_mtx_open;
-mtx_t lfs_mtx_read;
-mtx_t lfs_mtx_link;
-mtx_t lfs_mtx_rename;
-mtx_t lfs_mtx_unlink;
-mtx_t lfs_mtx_write;
-mtx_t lfs_mtx_fsync;
-mtx_t lfs_mtx_chown;
-mtx_t lfs_mtx_chmod;
-mtx_t lfs_mtx_create;
-mtx_t lfs_mtx_mkdir;
-mtx_t lfs_mtx_rmdir;
-mtx_t lfs_mtx_fsyncdir;
-mtx_t lfs_mtx_destroy;
+sem_t lfs_sem_getattr;
+sem_t lfs_sem_opendir;
+sem_t lfs_sem_readdir;
+sem_t lfs_sem_open;
+sem_t lfs_sem_read;
+sem_t lfs_sem_link;
+sem_t lfs_sem_rename;
+sem_t lfs_sem_unlink;
+sem_t lfs_sem_write;
+sem_t lfs_sem_fsync;
+sem_t lfs_sem_chown;
+sem_t lfs_sem_chmod;
+sem_t lfs_sem_create;
+sem_t lfs_sem_mkdir;
+sem_t lfs_sem_rmdir;
+sem_t lfs_sem_fsyncdir;
+sem_t lfs_sem_destroy;
 
 // 由参数中的路径生成完整路径
 static void lfs_fullpath(char fpath[PATH_MAX], const char *path)
@@ -757,6 +759,38 @@ int load_metadata_from_log(int fd)
 	return 0;
 }
 
+// 检查当前用户的读权限
+int checkReadMod(int owner_num, int group_num, mode_t mode)
+{
+	struct fuse_context *cxt = fuse_get_context();
+	if (((mode & 4) != 0) || ((owner_num == cxt->uid) && ((mode & 64) != 0)) || ((group_num == cxt->gid) && ((mode & 1024) != 0)))
+	{
+		printf("\nread permission ok\n");
+		return 1;
+	}
+	else
+	{
+		printf("\nread permission error\n");
+		return 0;
+	}
+}
+
+// 检查当前用户的写权限
+int checkWriteMod(int owner_num, int group_num, mode_t mode)
+{
+	struct fuse_context *cxt = fuse_get_context();
+	if (((mode & 2) > 0) || ((owner_num == cxt->uid) && ((mode & 32) != 0)) || ((group_num == cxt->gid) && ((mode & 512) != 0)))
+	{
+		printf("\nwrite permission ok\n");
+		return 1;
+	}
+	else
+	{
+		printf("\nwrite permission error\n");
+		return 0;
+	}
+}
+
 // 核心各操作功能代码
 
 /** Initialize filesystem
@@ -767,14 +801,14 @@ static void *lfs_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
 {
 	printf("\nWXH LFS INIT\nconn=0x%08lx, cfg=0x%08lx\n", (unsigned long)conn, (unsigned long)cfg);
 	
-	int mtx_result = mtx_lock(&lfs_golbal_mtx);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_golbal_sem);
+	assert(sem_result == 0);
 
 	pretty_print_conn(conn);
 	pretty_print_config(cfg);
 
-    mtx_result = mtx_unlock(&lfs_golbal_mtx);
-	assert(mtx_result == thrd_success);
+    sem_result = sem_post(&lfs_golbal_sem);
+	assert(sem_result == 0);
     return (struct private_state *) fuse_get_context()->private_data;
 }
 
@@ -805,8 +839,8 @@ static int lfs_getattr(const char *path, struct stat *statbuf, struct fuse_file_
 	memset(statbuf, 0, sizeof(struct stat));  // 初始化为全0
 	if (strcmp(path, "/") == 0)  // 根目录
 	{
-		int mtx_result = mtx_lock(&lfs_mtx_getattr);
-	    assert(mtx_result == thrd_success);
+		int sem_result = sem_wait(&lfs_sem_getattr);
+	    assert(sem_result == 0);
 
 		statbuf->st_mode = S_IFDIR | 0755;  // 标志出该路径是一个目录
 		statbuf->st_nlink = 2;  // 根目录的硬链接数量为什么是2呢？
@@ -818,20 +852,20 @@ static int lfs_getattr(const char *path, struct stat *statbuf, struct fuse_file_
 		statbuf->st_mtim = ts;
 		statbuf->st_ctim = ts;
 
-		mtx_result = mtx_unlock(&lfs_mtx_getattr);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_getattr);
+		assert(sem_result == 0);
 
 		return 0;
 	}
 	else
 	{
-		int mtx_result = mtx_lock(&lfs_mtx_getattr);
-	    assert(mtx_result == thrd_success);
+		int sem_result = sem_wait(&lfs_sem_getattr);
+	    assert(sem_result == 0);
 		
 		struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 		
-		mtx_result = mtx_unlock(&lfs_mtx_getattr);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_getattr);
+		assert(sem_result == 0);
 
 		if(NULL != inode_in_hash){
 			inode_in_hash->atim = ts; // 更新文件/目录的最后被访问时间
@@ -879,14 +913,14 @@ static int lfs_opendir(const char *path, struct fuse_file_info *fi)
 	if(strcmp(path, "/") != 0){
 		// 在哈希表中查找指定的文件或目录
         
-	    int mtx_result = mtx_lock(&lfs_mtx_opendir);
-	    assert(mtx_result == thrd_success);
+	    int sem_result = sem_wait(&lfs_sem_opendir);
+	    assert(sem_result == 0);
 
 		struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
-        struct fuse_context *cxt = fuse_get_context();
+        //struct fuse_context *cxt = fuse_get_context();
 
-		mtx_result = mtx_unlock(&lfs_mtx_opendir);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_opendir);
+		assert(sem_result == 0);
 
 		if (NULL == inode_in_hash)  
 		{
@@ -896,10 +930,12 @@ static int lfs_opendir(const char *path, struct fuse_file_info *fi)
 		{
 			return -ENOTDIR;  // 不是目录
 		}
+		/*
 		else if (inode_in_hash->owner_num != cxt->uid && inode_in_hash->group_num != cxt->gid)  // 调用进程的用户ID与目录所有者、所有者所属组不符
 		{
 			return -EACCES;  // 权限不符
 		}
+		*/
 	}
 
     return 0;
@@ -920,24 +956,31 @@ static int lfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 	printf("\nWXH LFS READDIR\npath=\"%s\", buf=0x%08lx, filler=0x%08lx, offset=%ld, fi=0x%08lx, flags=%d\n", fpath, (unsigned long)buf, (unsigned long)filler, offset, (unsigned long)fi, flags);
     pretty_print_fi(fi);
 
-	int mtx_result = mtx_lock(&lfs_mtx_readdir);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_readdir);
+	assert(sem_result == 0);
 
 	if (strcmp(path, "/")!=0)
 	{
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path);  // 在哈希表中查找指定的目录
 		if (ptr_fih == NULL)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_readdir);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_readdir);
+		    assert(sem_result == 0);
 			return -ENOENT;
 		}
 
 		if (!ptr_fih->is_dir)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_readdir);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_readdir);
+		    assert(sem_result == 0);
 			return -ENOTDIR;  // 不是目录
+		}
+
+        if(!checkReadMod(ptr_fih->owner_num, ptr_fih->group_num, ptr_fih->mode))
+		{
+			sem_result = sem_post(&lfs_sem_readdir);
+		    assert(sem_result == 0);
+			return -EACCES;  // 权限不符
 		}
 
 		struct stat *statbuf;
@@ -958,8 +1001,8 @@ static int lfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 			filler(buf, inode_in_hash->f_name, statbuf, 0, FUSE_FILL_DIR_PLUS);
 		}
 
-        mtx_result = mtx_unlock(&lfs_mtx_readdir);
-		assert(mtx_result == thrd_success);
+        sem_result = sem_post(&lfs_sem_readdir);
+		assert(sem_result == 0);
 		return 0;
 	}
 	else  // 根目录
@@ -984,8 +1027,8 @@ static int lfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
 			filler(buf, inode_in_hash->f_name, statbuf, 0, FUSE_FILL_DIR_PLUS);
 		}
 
-        mtx_result = mtx_unlock(&lfs_mtx_readdir);
-		assert(mtx_result == thrd_success);
+        sem_result = sem_post(&lfs_sem_readdir);
+		assert(sem_result == 0);
         return 0;
 	}
 }
@@ -1047,14 +1090,14 @@ static int lfs_open(const char *path, struct fuse_file_info *fi)
 	// 在哈希表中查找指定的文件
 	if (strcmp(path, "/")!=0)
 	{
-		int mtx_result = mtx_lock(&lfs_mtx_open);
-	    assert(mtx_result == thrd_success);
+		int sem_result = sem_wait(&lfs_sem_open);
+	    assert(sem_result == 0);
 
 		struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
-        struct fuse_context *cxt = fuse_get_context();
+        //struct fuse_context *cxt = fuse_get_context();
 
-		mtx_result = mtx_unlock(&lfs_mtx_open);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_open);
+		assert(sem_result == 0);
 
 		if ( inode_in_hash== NULL)
 		{
@@ -1063,11 +1106,13 @@ static int lfs_open(const char *path, struct fuse_file_info *fi)
 		else if (inode_in_hash->is_dir)
 		{
 			return -EISDIR; // 是一个目录
-		}  
+		}
+		/*  
 		else if (inode_in_hash->owner_num != cxt->uid && inode_in_hash->group_num != cxt->gid)  // 调用进程的用户ID与目录所有者、所有者所属组不符
 		{
 			return -EACCES;  // 权限不符
 		}
+		*/
 		return 0;
 	}
 
@@ -1092,22 +1137,31 @@ static int lfs_read(const char *path, char *buf, size_t count, off_t offset, str
 		return -EISDIR;
 	}
 	
-	int mtx_result = mtx_lock(&lfs_mtx_read);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_read);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if( inode_in_hash == NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_read);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_read);
+		assert(sem_result == 0);
 		return -ENOENT; // 该文件不存在
 	}
 	if (inode_in_hash->is_dir)  
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_read);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_read);
+		assert(sem_result == 0);
 		return -EISDIR;  // 是目录名
 	}
+	
+	printf("aaa\n");
+	if(!checkReadMod(inode_in_hash->owner_num, inode_in_hash->group_num, inode_in_hash->mode))
+	{
+		sem_result = sem_post(&lfs_sem_read);
+		assert(sem_result == 0);
+		return -EACCES;  // 权限不符
+	}
+    printf("bbb\n");
 
 	// 找到文件，找到该文件的索引结点块
 	uint32_t ino = inode_in_hash->inode_num;
@@ -1128,8 +1182,8 @@ static int lfs_read(const char *path, char *buf, size_t count, off_t offset, str
     // 起始位置超出了文件总长度，则返回0
 	if(offset >= inode_blk->size)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_read);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_read);
+		assert(sem_result == 0);
 		return 0;
 	}
 
@@ -1190,8 +1244,8 @@ static int lfs_read(const char *path, char *buf, size_t count, off_t offset, str
 		buf += n;
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_read);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_read);
+	assert(sem_result == 0);
 
 	return count;
 }
@@ -1252,20 +1306,20 @@ static int lfs_link(const char *path, const char *newpath)
         return -EISDIR;  // 源文件指定为根目录的错
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_link);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_link);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if( inode_in_hash == NULL)
 	{	
-		mtx_result = mtx_unlock(&lfs_mtx_link);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_link);
+		assert(sem_result == 0);
 		return -ENOENT;  // 源文件不存在
 	}
 	if (inode_in_hash->is_dir)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_link);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_link);
+		assert(sem_result == 0);
 		return -EISDIR;  // 是个目录
 	}
 
@@ -1308,8 +1362,8 @@ static int lfs_link(const char *path, const char *newpath)
 	// 增加索引结点信息表中相应记录的硬链接数量
 	li->ino_map[new_inode_in_hash->inode_num].nlink = li->ino_map[new_inode_in_hash->inode_num].nlink + 1;
 
-    mtx_result = mtx_unlock(&lfs_mtx_link);
-	assert(mtx_result == thrd_success);
+    sem_result = sem_post(&lfs_sem_link);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -1338,22 +1392,22 @@ static int lfs_rename(const char *path, const char *newpath, unsigned int flags)
 		return -EISDIR;  // 源文件指定为根目录了
 	}
 	
-	int mtx_result = mtx_lock(&lfs_mtx_rename);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_rename);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 
 	if(inode_in_hash == NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rename);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rename);
+		assert(sem_result == 0);
 		return -ENOENT;  // 源文件不存在
 	}
 
 	if(inode_in_hash->is_dir)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rename);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rename);
+		assert(sem_result == 0);
 		return -EISDIR;  // 源文件是一个目录
 	}
 
@@ -1361,8 +1415,8 @@ static int lfs_rename(const char *path, const char *newpath, unsigned int flags)
 	struct lfs_file_inode_hash *new_inode_in_hash = find_inode_by_path_in_hash(newpath);
 	if (new_inode_in_hash != NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rename);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rename);
+		assert(sem_result == 0);
 		return -EEXIST;  // 新文件名已存在
 	}
 
@@ -1394,8 +1448,8 @@ static int lfs_rename(const char *path, const char *newpath, unsigned int flags)
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path1);
 		if (ptr_fih == NULL)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_rename);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_rename);
+		    assert(sem_result == 0);
 			return -ENOENT;  // 新文件拟在路径不存在
 		}
 		HASH_ADD_STR(ptr_fih->subfih, f_name, new_inode_in_hash);
@@ -1414,15 +1468,15 @@ static int lfs_rename(const char *path, const char *newpath, unsigned int flags)
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path1);
 		if (ptr_fih == NULL)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_rename);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_rename);
+		    assert(sem_result == 0);
 			return -ENOENT;  // 原文件拟在路径不存在
 		}
 		HASH_DEL(ptr_fih->subfih, inode_in_hash);
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_rename);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_rename);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -1466,22 +1520,29 @@ static int lfs_unlink(const char *path)
 		return -EISDIR;  // 根目录
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_unlink);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_unlink);
+	assert(sem_result == 0);
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 
 	if(inode_in_hash == NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_unlink);
-		assert(mtx_result == thrd_success);
-		return -ENOENT;
+		sem_result = sem_post(&lfs_sem_unlink);
+		assert(sem_result == 0);
+		return -ENOENT;  // 文件不存在
 	}
 
 	if (inode_in_hash->is_dir)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_unlink);
-		assert(mtx_result == thrd_success);
-		return -EISDIR;
+		sem_result = sem_post(&lfs_sem_unlink);
+		assert(sem_result == 0);
+		return -EISDIR;  // 是目录，不是文件
+	}
+
+	if(!checkWriteMod(inode_in_hash->owner_num, inode_in_hash->group_num, inode_in_hash->mode))
+	{
+		sem_result = sem_post(&lfs_sem_unlink);
+		assert(sem_result == 0);
+		return -EACCES;  // 权限不符
 	}
 
 	// 更新索引结点表中对应条目，若硬链接数大于1则减少一个，没有其他硬链接则真正删除文件
@@ -1517,8 +1578,8 @@ static int lfs_unlink(const char *path)
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path1);
 		if(ptr_fih==NULL)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_unlink);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_unlink);
+		    assert(sem_result == 0);
 			return -ENOENT;  // 上级目录未找到
 		}
 		else
@@ -1527,8 +1588,8 @@ static int lfs_unlink(const char *path)
 		}
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_unlink);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_unlink);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -1549,22 +1610,29 @@ static int lfs_write(const char *path, const char *buf, size_t count, off_t offs
 		return -EISDIR;  // 根目录
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_write);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_write);
+	assert(sem_result == 0);
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 
 	if(inode_in_hash == NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_write);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_write);
+		assert(sem_result == 0);
 		return -ENOENT;  // 待写入的文件不存在
 	}
 
 	if(inode_in_hash->is_dir)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_write);
-		assert(mtx_result == thrd_success);
-		return -EISDIR;
+		sem_result = sem_post(&lfs_sem_write);
+		assert(sem_result == 0);
+		return -EISDIR;  // 是目录，不是文件
+	}
+
+	if(!checkWriteMod(inode_in_hash->owner_num, inode_in_hash->group_num, inode_in_hash->mode))
+	{
+		sem_result = sem_post(&lfs_sem_write);
+		assert(sem_result == 0);
+		return -EACCES;  // 权限不符
 	}
 
 	// 找到待写入文件的索引结点
@@ -1585,8 +1653,8 @@ static int lfs_write(const char *path, const char *buf, size_t count, off_t offs
 	// 如果这些字节写入文件，将超出最多允许的数据块数量
 	if ( offset + count >= ( MAX_DIRECT_BLKS_INODE + MAX_UNDIRECT_BLKS_INODE * MAX_BLKS_4_UNDIRECT ) * 1024 )
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_write);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_write);
+		assert(sem_result == 0);
 		return -EFBIG;  // 文件太大
 	}
 
@@ -1789,8 +1857,8 @@ static int lfs_write(const char *path, const char *buf, size_t count, off_t offs
 		inode_in_hash->f_size = inode_blk->size;
 	}
 	
-	mtx_result = mtx_unlock(&lfs_mtx_write);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_write);
+	assert(sem_result == 0);
 	return count;
 }
 
@@ -1817,8 +1885,8 @@ static int lfs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
     lfs_fullpath(fpath, path);
     printf("\nWXH FSYNC\npath=\"%s\", datasync=%d, fi=0x%08lx\n", fpath, datasync, (unsigned long)fi);
 
-	int mtx_result = mtx_lock(&lfs_mtx_fsync);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_fsync);
+	assert(sem_result == 0);
 
 	// 将缓冲段的所有内容写入磁盘
 	size_t ret1 = pwrite(li->fd, li->cur_seg_buf, SEG_SIZE, li->log_head * SEG_SIZE + SUPERBLKSIZE);
@@ -1828,8 +1896,8 @@ static int lfs_fsync(const char *path, int datasync, struct fuse_file_info *fi)
 		ret2 = copy_metadata_to_log(li->fd);
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_fsync);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_fsync);
+	assert(sem_result == 0);
 
 	if(ret1 != SEG_SIZE || ret2<0)
 	{
@@ -1858,14 +1926,14 @@ static int lfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_in
 		return -EISDIR;  // 不改变根目录的所有者
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_chown);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_chown);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if (inode_in_hash==NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_chown);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_chown);
+		assert(sem_result == 0);
 		return -ENOENT; // 没找到
 	}
 	inode_in_hash->owner_num = uid;
@@ -1874,8 +1942,8 @@ static int lfs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_in
 	clock_gettime(CLOCK_REALTIME, &ts);  // 当前时间
 	inode_in_hash->ctim = ts;
 
-	mtx_result = mtx_unlock(&lfs_mtx_chown);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_chown);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -1899,14 +1967,14 @@ static int lfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 		return -EISDIR;  // 根目录
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_chmod);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_chmod);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if (inode_in_hash==NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_chmod);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_chmod);
+		assert(sem_result == 0);
 		return -ENOENT;
 	}
 
@@ -1919,8 +1987,8 @@ static int lfs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 		inode_in_hash->mode = S_IFREG | mode;
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_chmod);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_chmod);
+	assert(sem_result == 0);
 	return 0; 
 }
 
@@ -1939,8 +2007,8 @@ static int lfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		return -EISDIR;  // 根目录
 	}
 
-	int mtx_result = mtx_lock(&lfs_mtx_create);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_create);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 
@@ -1948,14 +2016,14 @@ static int lfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	{
 		if (inode_in_hash->is_dir)  // 同名的目录
 		{
-		    mtx_result = mtx_unlock(&lfs_mtx_create);
-		    assert(mtx_result == thrd_success);
+		    sem_result = sem_post(&lfs_sem_create);
+		    assert(sem_result == 0);
 			return -EISDIR;
 		}
 		else  // 已有同名文件存在
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_create);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_create);
+		    assert(sem_result == 0);
 			return -EEXIST;
 		}
 	}
@@ -2009,8 +2077,8 @@ static int lfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		if ( ptr_fih==NULL || !ptr_fih->is_dir )
 		{
 			li->n_inode--;
-			mtx_result = mtx_unlock(&lfs_mtx_create);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_create);
+		    assert(sem_result == 0);
 			return -ENOENT;
 		}
 		else
@@ -2043,8 +2111,8 @@ static int lfs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 		li->cur_seg_blk++;  // 当前段的当前块号加1
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_create);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_create);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -2090,14 +2158,14 @@ static int lfs_mkdir(const char *path, mode_t mode)
 		return 0;  // 根目录
 	}
 	
-	int mtx_result = mtx_lock(&lfs_mtx_mkdir);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_mkdir);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if(inode_in_hash != NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_mkdir);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_mkdir);
+		assert(sem_result == 0);
 		return 0;  // 指定名称的目录已存在
 	}
 
@@ -2151,8 +2219,8 @@ static int lfs_mkdir(const char *path, mode_t mode)
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path1);
 		if(ptr_fih==NULL || !ptr_fih->is_dir)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_mkdir);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_mkdir);
+		    assert(sem_result == 0);
 			return -ENOENT;  // 上级目录未找到
 		}
 		else
@@ -2185,8 +2253,8 @@ static int lfs_mkdir(const char *path, mode_t mode)
 		li->cur_seg_blk++;  // 当前段的当前块号加1
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_mkdir);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_mkdir);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -2204,29 +2272,36 @@ static int lfs_rmdir(const char *path)
 		return -EPERM;  // 删除根目录是不被允许的操作
 	}
 	
-	int mtx_result = mtx_lock(&lfs_mtx_rmdir);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_rmdir);
+	assert(sem_result == 0);
 
 	struct lfs_file_inode_hash *inode_in_hash = find_inode_by_path_in_hash(path);
 	if(inode_in_hash == NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rmdir);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rmdir);
+		assert(sem_result == 0);
 		return -ENOENT;  // 指定名称的目录不存在
 	}
 	
 	if (!inode_in_hash->is_dir)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rmdir);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rmdir);
+		assert(sem_result == 0);
 		return -ENOTDIR;  // 不是目录
 	}
 
     if (inode_in_hash->subfih != NULL)
 	{
-		mtx_result = mtx_unlock(&lfs_mtx_rmdir);
-		assert(mtx_result == thrd_success);
+		sem_result = sem_post(&lfs_sem_rmdir);
+		assert(sem_result == 0);
 		return -ENOTEMPTY;  // 目录非空
+	}
+
+	if(!checkWriteMod(inode_in_hash->owner_num, inode_in_hash->group_num, inode_in_hash->mode))
+	{
+		sem_result = sem_post(&lfs_sem_rmdir);
+		assert(sem_result == 0);
+		return -EACCES;  // 权限不符
 	}
 
 	// 从哈希表中删除该目录结点
@@ -2246,8 +2321,8 @@ static int lfs_rmdir(const char *path)
 		struct lfs_file_inode_hash *ptr_fih = find_inode_by_path_in_hash(path1);
 		if(ptr_fih==NULL)
 		{
-			mtx_result = mtx_unlock(&lfs_mtx_rmdir);
-		    assert(mtx_result == thrd_success);
+			sem_result = sem_post(&lfs_sem_rmdir);
+		    assert(sem_result == 0);
 			return -ENOENT;  // 上级目录未找到
 		}
 		else
@@ -2272,8 +2347,8 @@ static int lfs_rmdir(const char *path)
 		li->ino_map[inode_in_hash->inode_num].is_dir = 0;
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_rmdir);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_rmdir);
+	assert(sem_result == 0);
 	return 0;
 }
 
@@ -2286,8 +2361,8 @@ static int lfs_fsyncdir(const char *path, int datasync, struct fuse_file_info *f
     lfs_fullpath(fpath, path);
     printf("\nWXH FSYNCDIR\npath=\"%s\", datasync=%d, fi=0x%08lx\n", fpath, datasync, (unsigned long)fi);
 
-	int mtx_result = mtx_lock(&lfs_mtx_fsyncdir);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_fsyncdir);
+	assert(sem_result == 0);
 
 	// 将缓冲段的所有内容写入磁盘
 	size_t ret1 = pwrite(li->fd, li->cur_seg_buf, SEG_SIZE, li->log_head * SEG_SIZE + SUPERBLKSIZE);
@@ -2297,8 +2372,8 @@ static int lfs_fsyncdir(const char *path, int datasync, struct fuse_file_info *f
 		ret2 = copy_metadata_to_log(li->fd);
 	}
 
-	mtx_result = mtx_unlock(&lfs_mtx_fsyncdir);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_fsyncdir);
+	assert(sem_result == 0);
 
 	if(ret1 != SEG_SIZE || ret2<0)
 	{
@@ -2309,7 +2384,6 @@ static int lfs_fsyncdir(const char *path, int datasync, struct fuse_file_info *f
 		return 0;
 	}
 }
-
 
 static int lfs_symlink(const char *from, const char *to)
 {
@@ -2352,39 +2426,39 @@ static void lfs_destroy(void *private_data)
 	printf("\nWXH LFS DESTROY\n");
 
 	// 将缓冲段的所有内容写入磁盘
-	int mtx_result = mtx_lock(&lfs_mtx_destroy);
-	assert(mtx_result == thrd_success);
+	int sem_result = sem_wait(&lfs_sem_destroy);
+	assert(sem_result == 0);
 
 	size_t ret1 = pwrite(li->fd, li->cur_seg_buf, SEG_SIZE, li->log_head * SEG_SIZE + SUPERBLKSIZE);
 
     // 将元数据写入磁盘，操作成功返回0，否则返回-1
     int ret2 = copy_metadata_to_log(li->fd);
 
-	mtx_result = mtx_unlock(&lfs_mtx_destroy);
-	assert(mtx_result == thrd_success);
+	sem_result = sem_post(&lfs_sem_destroy);
+	assert(sem_result == 0);
 
 	assert(ret1 == SEG_SIZE && ret2>=0);
 
 	// 销毁所有互斥对象
-	mtx_destroy(&lfs_mtx_getattr);
-	mtx_destroy(&lfs_mtx_opendir);
-	mtx_destroy(&lfs_mtx_readdir);
-	mtx_destroy(&lfs_mtx_open);
-	mtx_destroy(&lfs_mtx_read);
-	mtx_destroy(&lfs_mtx_link);
-	mtx_destroy(&lfs_mtx_rename);
-	mtx_destroy(&lfs_mtx_unlink);
-	mtx_destroy(&lfs_mtx_write);
-	mtx_destroy(&lfs_mtx_fsync);
-	mtx_destroy(&lfs_mtx_chown);
-	mtx_destroy(&lfs_mtx_chmod);
-	mtx_destroy(&lfs_mtx_create);
-	mtx_destroy(&lfs_mtx_mkdir);
-	mtx_destroy(&lfs_mtx_rmdir);
-	mtx_destroy(&lfs_mtx_fsyncdir);
-	mtx_destroy(&lfs_mtx_destroy);
+	sem_destroy(&lfs_sem_getattr);
+	sem_destroy(&lfs_sem_opendir);
+	sem_destroy(&lfs_sem_readdir);
+	sem_destroy(&lfs_sem_open);
+	sem_destroy(&lfs_sem_read);
+	sem_destroy(&lfs_sem_link);
+	sem_destroy(&lfs_sem_rename);
+	sem_destroy(&lfs_sem_unlink);
+	sem_destroy(&lfs_sem_write);
+	sem_destroy(&lfs_sem_fsync);
+	sem_destroy(&lfs_sem_chown);
+	sem_destroy(&lfs_sem_chmod);
+	sem_destroy(&lfs_sem_create);
+	sem_destroy(&lfs_sem_mkdir);
+	sem_destroy(&lfs_sem_rmdir);
+	sem_destroy(&lfs_sem_fsyncdir);
+	sem_destroy(&lfs_sem_destroy);
 
-	mtx_destroy(&lfs_golbal_mtx);
+	sem_destroy(&lfs_golbal_sem);
 }
 
 static int lfs_lock(const char *path, struct fuse_file_info *fi, int cmd, struct flock *lock)
@@ -2484,24 +2558,24 @@ int main(int argc, char *argv[])
 	}
 
     // 初始化所有互斥对象
-	mtx_init(&lfs_golbal_mtx, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_getattr, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_opendir, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_readdir, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_open, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_read, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_link, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_rename, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_unlink, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_write, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_fsync, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_chown, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_chmod, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_create, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_mkdir, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_rmdir, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_fsyncdir, mtx_plain | mtx_recursive);
-	mtx_init(&lfs_mtx_destroy, mtx_plain | mtx_recursive);
+	sem_init(&lfs_golbal_sem, 0, 1);
+	sem_init(&lfs_sem_getattr, 0, 1);
+	sem_init(&lfs_sem_opendir, 0, 1);
+	sem_init(&lfs_sem_readdir, 0, 1);
+	sem_init(&lfs_sem_open, 0, 1);
+	sem_init(&lfs_sem_read, 0, 1);
+	sem_init(&lfs_sem_link, 0, 1);
+	sem_init(&lfs_sem_rename, 0, 1);
+	sem_init(&lfs_sem_unlink, 0, 1);
+	sem_init(&lfs_sem_write, 0, 1);
+	sem_init(&lfs_sem_fsync, 0, 1);
+	sem_init(&lfs_sem_chown, 0, 1);
+	sem_init(&lfs_sem_chmod, 0, 1);
+	sem_init(&lfs_sem_create, 0, 1);
+	sem_init(&lfs_sem_mkdir, 0, 1);
+	sem_init(&lfs_sem_rmdir, 0, 1);
+	sem_init(&lfs_sem_fsyncdir, 0, 1);
+	sem_init(&lfs_sem_destroy, 0, 1);
 
     // 控制权转给FUSE
     return fuse_main(argc, argv, &lfs_oper, lfs_private_data);
